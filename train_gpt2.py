@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.module import T
 import math
+import tiktoken
 
 class Block(nn.Module):
     def __init__(self, config):
@@ -77,8 +78,18 @@ class GPT(nn.Module):
         )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias = False)
+        self.transformer.wte.weight = self.lm_head.weight   #sharing
+        self.apply(self._init_weights)
 
-    def forward(self, idx):
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, 0, 0.02)
+            if module.bias is not None:
+                torch.nn.init.constant_(module.bias, 0)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, 0, 0.02)
+
+    def forward(self, idx, targets = None):
         B, T = idx.size()
         assert T<=self.config.block_size, f"cannot deal with sequence of length {T}, since the longest is {self.config.block_size}"
 
@@ -94,7 +105,11 @@ class GPT(nn.Module):
 
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
-        return logits
+
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
 
 
 
@@ -146,3 +161,28 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
 
         return model
+
+class DataLoaderLite():
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+
+        with open('input.txt', 'r') as f:
+            text = f.read()
+
+        enc = tiktoken.get_encoding('gpt2')
+        tokens = enc.encode(text)
+        self.tokens = torch.tensor(tokens)
+
+        self.current_position = 0
+
+    def next_batch(self):
+        B, T = self.B, self.T
+
+        buf = self.tokens[self.current_position:self.current_position+B*T+1]
+        self.current_position += B*T
+        x = buf[:-1].view(self.B, self.T, -1)
+        y = buf[1:].view(self.B, self.T, -1)
+        if (self.current_position + B*T + 1) > len(self.tokens):
+            self.current_position = 0
+        return x, y
