@@ -25,6 +25,7 @@ class CausalSelfAttention(nn.Module):
         assert config.n_embd%config.n_head == 0
         self.c_attn = nn.Linear(self.config.n_embd, 3 * config.n_embd)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.SCALE_INIT = 1
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size))
@@ -51,7 +52,7 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4*config.n_embd)
         self.gelu = nn.GELU(approximate = 'tanh')
         self.c_proj = nn.Linear(4*config.n_embd, config.n_embd)
-
+        self.c_proj.SCALE_INIT = 1
     def forward(self, x):
         x = self.c_fc(x)
         x = self.gelu(x)
@@ -82,12 +83,15 @@ class GPT(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
+        std = 0.02
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, 0, 0.02)
+            if hasattr(module, 'SCALE_INIT'):
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, 0, std)
             if module.bias is not None:
                 torch.nn.init.constant_(module.bias, 0)
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, 0, 0.02)
+            torch.nn.init.normal_(module.weight, 0, std)
 
     def forward(self, idx, targets = None):
         B, T = idx.size()
