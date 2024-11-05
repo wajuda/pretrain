@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from datetime import time
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -190,3 +192,34 @@ class DataLoaderLite():
         if (self.current_position + B*T + 1) > len(self.tokens):
             self.current_position = 0
         return x, y
+
+if __name__ == '__main__':
+    torch.manual_seed(1337)
+    if torch.cuda.is_available():
+        device = "cuda"
+        torch.cuda.manual_seed(1337)
+    else:
+        device = "cpu"
+    train_loader = DataLoaderLite(5, 32)
+    torch.set_float32_matmul_precision('high')
+
+    model = GPT(GPTConfig)
+    model.to(device)
+
+    optimizer = torch.optim.Adamw(model.parameters(), lr=3e-4)
+
+    for i in range(100):
+        t0 = time.time()
+        x, y = train_loader.next_batch()
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+        with torch.autocast(device_type = device, dtype = torch.bfloat16):
+            logits, loss = model(x, y)
+        loss.backward()
+        optimizer.step()
+        torch.cude.synchronize()
+        t1 = time.time()
+        print(f'{t1*1000}-{t0*1000}ms')
+
+
+
