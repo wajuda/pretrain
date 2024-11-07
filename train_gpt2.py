@@ -4,6 +4,7 @@ from datetime import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from holoviews.operation.datashader import inspect
 from torch.nn.modules.module import T
 import math
 import tiktoken
@@ -172,6 +173,20 @@ class GPT(nn.Module):
 
         return model
 
+    def configure_optimizers(self, weight_decay, learning_rate, device):
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        decay_param = [p for _, p in param_dict.items() if p.dim()>=2]
+        no_decay_param = [p for _, p in param_dict.items() if p.dim()<2]
+        optim_groups = [{'params': decay_param, 'weight_decay': weight_decay}, {'params': no_decay_param, 'weight_decay': 0.0}]
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        used_fused = fused_available and 'cuda' in device
+
+
+
+        optimizer = torch.optim.AdamW(optim_groups, lr = learning_rate, betas = (0.9, 0.95), eps = 1e-8, fused=used_fused)
+        return optimizer
+
 class DataLoaderLite():
     def __init__(self, B, T):
         self.B = B
@@ -197,6 +212,22 @@ class DataLoaderLite():
             self.current_position = 0
         return x, y
 
+max_lr = 3e-4
+min_lr = max_lr * 0.1
+warmup_steps = 10
+max_steps = 50
+def get_lr(step):
+    if step < warmup_steps:
+        return max_lr * (step+1) / warmup_steps
+    if step > max_steps:
+        return min_lr
+
+    decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps)
+    assert 0<= decay_ratio <=1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
+
+
 if __name__ == '__main__':
     torch.manual_seed(1337)
     if torch.cuda.is_available():
@@ -211,8 +242,8 @@ if __name__ == '__main__':
     model.to(device)
     model = torch.compile(model)
 
-    optimizer = torch.optim.Adamw(model.parameters(), lr=3e-4)
-
+    #optimizer = torch.optim.Adamw(model.parameters(), betas=(0.9, 0.95), lr=3e-4, eps = 1e-8)
+    optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
     for i in range(100):
         t0 = time.time()
         x, y = train_loader.next_batch()
@@ -221,6 +252,10 @@ if __name__ == '__main__':
         with torch.autocast(device_type = device, dtype = torch.bfloat16):
             logits, loss = model(x, y)
         loss.backward()
+        lr = get_lr(i)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         torch.cude.synchronize()
         t1 = time.time()
